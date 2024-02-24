@@ -3,7 +3,6 @@ from beam import App, Runtime, Image, Output, Volume
 import os
 import torch
 from diffusers import StableDiffusionPipeline
-from PIL import Image
 
 cache_path = "./models"
 model_id = "runwayml/stable-diffusion-v1-5"
