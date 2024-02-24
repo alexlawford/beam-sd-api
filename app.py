@@ -7,11 +7,11 @@ from diffusers import StableDiffusionPipeline
 cache_path = "./models"
 model_id = "runwayml/stable-diffusion-v1-5"
 
-# The environment your code will run on
+# The environment your app runs on
 app = App(
     name="stable-diffusion-app",
     runtime=Runtime(
-        cpu=2,
+        cpu=1,
         memory="32Gi",
         gpu="A10G",
         image=Image(
@@ -30,24 +30,33 @@ app = App(
     volumes=[Volume(name="models", path="./models")],
 )
 
-
-@app.task_queue(
-    # File to store image outputs
-    outputs=[Output(path="output.png")]
-)
-def generate_image(**inputs):
-    prompt = inputs["prompt"]
-
-    torch.backends.cuda.matmul.allow_tf32 = True
-
+# This runs once when the container first boots
+def load_models():
     pipe = StableDiffusionPipeline.from_pretrained(
         model_id,
         revision="fp16",
         torch_dtype=torch.float16,
         cache_dir=cache_path,
-        # Add your own auth token from Huggingface
-        use_auth_token=os.environ["HUGGINGFACE_API_KEY"],
     ).to("cuda")
+
+    return pipe
+
+@app.task_queue(
+    loader=load_models,
+    outputs=[Output(path="output.png")],
+)
+def generate_image(**inputs):
+    # Grab inputs passed to the API
+    try:
+        prompt = inputs["prompt"]
+    # Use a default prompt if none is provided
+    except KeyError:
+        prompt = "a renaissance style photo of elon musk"
+    
+    # Retrieve pre-loaded model from loader
+    pipe = inputs["context"]
+
+    torch.backends.cuda.matmul.allow_tf32 = True
 
     with torch.inference_mode():
         with torch.autocast("cuda"):
@@ -55,8 +64,3 @@ def generate_image(**inputs):
 
     print(f"Saved Image: {image}")
     image.save("output.png")
-
-
-if __name__ == "__main__":
-    prompt = "a renaissance style photo of elon musk"
-    generate_image(prompt=prompt)
