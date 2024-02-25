@@ -2,7 +2,9 @@ from beam import App, Runtime, Image, Output, Volume
 
 import os
 import torch
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionControlNetInpaintPipeline, ControlNetModel
+from diffusers.utils import load_image
+import numpy as np
 
 cache_path = "./models"
 model_id = "runwayml/stable-diffusion-v1-5"
@@ -24,11 +26,22 @@ app = App(
                 "accelerate",
                 "safetensors",
                 "xformers",
+                "numpy"
             ],
         ),
     ),
     volumes=[Volume(name="models", path="./models")],
 )
+
+# Temp: load images for testing
+init_image = load_image(
+);
+
+mask_image = load_image(
+);
+
+control_image = load_image(
+);
 
 # This runs once when the container first boots
 def load_models():
