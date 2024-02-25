@@ -2,8 +2,11 @@ from beam import App, Runtime, Image, Output, Volume
 
 import os
 import torch
+import PIL
 from diffusers import StableDiffusionControlNetInpaintPipeline, ControlNetModel
 from diffusers.utils import load_image
+import base64
+from io import BytesIO
 
 cache_path = "./models"
 model_id = "runwayml/stable-diffusion-v1-5"
@@ -32,17 +35,21 @@ app = App(
     volumes=[Volume(name="models", path="./models")],
 )
 
-# Temp: load images for testing
-init_image = load_image(
-    "https://github.com/alexlawford/beam-sd-api/blob/c8351de9bace8e93bb6a6e4bc7a63c76b5053e24/example_init_image.png"
-)
+def decode_base64_image(image_string):
+    image_string = image_string[len("data:image/png;base64,"):]
+    base64_image = base64.b64decode(image_string)
+    buffer = BytesIO(base64_image)
+    image = PIL.Image.open(buffer)
+    rgb = image.convert('RGB')
+    return rgb
 
+# Temp: load images for testing
 mask_image = load_image(
-    "https://github.com/alexlawford/beam-sd-api/blob/c8351de9bace8e93bb6a6e4bc7a63c76b5053e24/example_mask_image.png"
+    "./example_mask_image.png"
 )
 
 control_image = load_image(
-    "https://github.com/alexlawford/beam-sd-api/blob/c8351de9bace8e93bb6a6e4bc7a63c76b5053e24/example_control_image.png"
+    "./example_control_image.png"
 )
 
 # This runs once when the container first boots
@@ -65,12 +72,17 @@ def load_models():
     outputs=[Output(path="output.png")],
 )
 def generate_image(**inputs):
+    
     # Grab inputs passed to the API
     try:
         prompt = inputs["prompt"]
     # Use a default prompt if none is provided
     except KeyError:
         prompt = "A middle-aged man standing next to a polar bear in the artic"
+
+    init_image = decode_base64_image(
+        inputs["img"]
+    )
     
     # Retrieve pre-loaded model from loader
     pipe = inputs["context"]
