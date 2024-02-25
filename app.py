@@ -4,7 +4,6 @@ import os
 import torch
 from diffusers import StableDiffusionControlNetInpaintPipeline, ControlNetModel
 from diffusers.utils import load_image
-import numpy as np
 
 cache_path = "./models"
 model_id = "runwayml/stable-diffusion-v1-5"
@@ -26,8 +25,7 @@ app = App(
                 "pillow",
                 "accelerate",
                 "safetensors",
-                "xformers",
-                "numpy"
+                "xformers"
             ],
         ),
     ),
@@ -37,15 +35,15 @@ app = App(
 # Temp: load images for testing
 init_image = load_image(
     "https://github.com/alexlawford/beam-sd-api/blob/c8351de9bace8e93bb6a6e4bc7a63c76b5053e24/example_init_image.png"
-);
+)
 
 mask_image = load_image(
     "https://github.com/alexlawford/beam-sd-api/blob/c8351de9bace8e93bb6a6e4bc7a63c76b5053e24/example_mask_image.png"
-);
+)
 
 control_image = load_image(
     "https://github.com/alexlawford/beam-sd-api/blob/c8351de9bace8e93bb6a6e4bc7a63c76b5053e24/example_control_image.png"
-);
+)
 
 # This runs once when the container first boots
 def load_models():
