@@ -44,12 +44,8 @@ def decode_base64_image(image_string):
     return rgb
 
 # Temp: load images for testing
-mask_image = load_image(
-    "./example_mask_image.png"
-)
-
-control_image = load_image(
-    "./example_control_image.png"
+background = load_image(
+    "./plain-background.png"
 )
 
 # This runs once when the container first boots
@@ -73,15 +69,14 @@ def load_models():
 )
 def generate_image(**inputs):
     
-    # Grab inputs passed to the API
-    try:
-        prompt = inputs["prompt"]
-    # Use a default prompt if none is provided
-    except KeyError:
-        prompt = "A middle-aged man standing next to a polar bear in the artic"
+    prompt = inputs["prompt"]
 
-    init_image = decode_base64_image(
-        inputs["img"]
+    mask_image = decode_base64_image(
+        inputs["mask_image"]
+    )
+
+    control_image = decode_base64_image(
+        inputs["control_image"]
     )
     
     # Retrieve pre-loaded model from loader
@@ -95,7 +90,7 @@ def generate_image(**inputs):
                 prompt,
                 num_inference_steps=50,
                 guidance_scale=7.5,
-                image=init_image,
+                image=background,
                 mask_image=mask_image,
                 control_image=control_image
     ).images[0]
