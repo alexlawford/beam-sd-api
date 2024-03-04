@@ -44,8 +44,16 @@ def decode_base64_image(image_string):
     return rgb
 
 # Temp: load images for testing
-background = load_image(
-    "./plain-background.png"
+image = load_image(
+    "./example_image.png"
+)
+
+mask_image = load_image(
+    "./example_mask.png"
+)
+
+control_image = load_image(
+    "./example_control_image.png"
 )
 
 # This runs once when the container first boots
@@ -71,13 +79,13 @@ def generate_image(**inputs):
     
     prompt = inputs["prompt"]
 
-    mask_image = decode_base64_image(
-        inputs["mask_image"]
-    )
+    # mask_image = decode_base64_image(
+    #     inputs["mask_image"]
+    # )
 
-    control_image = decode_base64_image(
-        inputs["control_image"]
-    )
+    # control_image = decode_base64_image(
+    #     inputs["control_image"]
+    # )
     
     # Retrieve pre-loaded model from loader
     pipe = inputs["context"]
@@ -90,7 +98,7 @@ def generate_image(**inputs):
                 prompt,
                 num_inference_steps=50,
                 guidance_scale=7.5,
-                image=background,
+                image=image,
                 mask_image=mask_image,
                 control_image=control_image
     ).images[0]
