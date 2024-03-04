@@ -44,7 +44,7 @@ def decode_base64_image(image_string):
     return rgb
 
 # Temp: load images for testing
-image = load_image(
+img = load_image(
     "./example_image.png"
 )
 
@@ -77,7 +77,7 @@ def load_models():
 )
 def generate_image(**inputs):
     
-    prompt = inputs["prompt"]
+    # prompt = inputs["prompt"]
 
     # mask_image = decode_base64_image(
     #     inputs["mask_image"]
@@ -86,6 +86,8 @@ def generate_image(**inputs):
     # control_image = decode_base64_image(
     #     inputs["control_image"]
     # )
+
+    prompt = "A man holding a camera"
     
     # Retrieve pre-loaded model from loader
     pipe = inputs["context"]
@@ -98,7 +100,7 @@ def generate_image(**inputs):
                 prompt,
                 num_inference_steps=50,
                 guidance_scale=7.5,
-                image=image,
+                image=img,
                 mask_image=mask_image,
                 control_image=control_image
     ).images[0]
