@@ -1,9 +1,8 @@
 from beam import App, Runtime, Image, Output, Volume
-
 import os
 import torch
 import PIL
-from diffusers import AutoPipelineForInpainting, AutoPipelineForImage2Image, ControlNetModel
+from diffusers import StableDiffusionXLControlNetImg2ImgPipeline, StableDiffusionControlNetInpaintPipeline, ControlNetModel
 from diffusers.utils import load_image
 import base64
 from io import BytesIO
@@ -20,7 +19,7 @@ app = App(
         image=Image(
             python_version="python3.8",
             python_packages=[
-                "diffusers[torch]>=0.10",
+                "diffusers[torch]>=0.26.3",
                 "transformers",
                 "torch",
                 "pillow",
@@ -63,28 +62,31 @@ def load_models():
         torch_dtype=torch.float16
     )
 
-    inPaintPipe = AutoPipelineForInpainting.from_pretrained(
+    controlnetXl = ControlNetModel.from_pretrained(
+        "thibaud/controlnet-openpose-sdxl-1.0",
+        torch_dtype=torch.float16
+    )
+
+    inPaintPipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
         controlnet=controlnet,
         torch_dtype=torch.float16,
-        use_safetensors=True,
         cache_dir=cache_path,
     ).to("cuda")
 
-    sdxlInPaintPipe = AutoPipelineForInpainting.from_pretrained(
+    sdxlImg2ImgPipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-refiner-1.0",
+        controlnet=controlnetXl,
         torch_dtype=torch.float16,
+        variant="fp16",
         use_safetensors=True,
-        cache_dir=cache_path,
+        cache_dir=cache_path,     
     ).to("cuda")
-
-    sdxlImg2ImgPipe = AutoPipelineForImage2Image.from_pipe(sdxlInPaintPipe)
 
     inPaintPipe.enable_xformers_memory_efficient_attention()
-    sdxlInPaintPipe.enable_xformers_memory_efficient_attention()
     sdxlImg2ImgPipe.enable_xformers_memory_efficient_attention()
 
-    return (inPaintPipe, sdxlInPaintPipe, sdxlImg2ImgPipe)
+    return (inPaintPipe, sdxlImg2ImgPipe)
 
 @app.task_queue(
     loader=load_models,
@@ -102,36 +104,38 @@ def generate_image(**inputs):
     #     inputs["control_image"]
     # )
 
-    prompt = "A man holding a camera"
+    generator = torch.Generator(device="cuda").manual_seed(0)
+
+    prompt = "A man holding a camera in the artic"
     
     # Retrieve pre-loaded models from loader
-    (inPaintPipe, sdxlInPaintPipe, sdxlImg2ImgPipe) = inputs["context"]
+    (inPaintPipe, sdxlImg2ImgPipe) = inputs["context"]
 
     image = inPaintPipe(
+        width=1024 / 2,
+        height=576 / 2,
         prompt=prompt,
         image=img,
         mask_image=mask_image,
         control_image=control_image,
         guidance_scale=8.0,
-        num_inference_steps=20
+        num_inference_steps=50,
+        generator=generator
     ).images[0]
 
-    image = sdxlInPaintPipe(
-        prompt=prompt,
-        image=image,
-        mask_image=mask_image,
-        guidance_scale=8.0,
-        num_inference_steps=100,
-        strength=0.2,
-        output_type="latent",  # keep in latent to save some VRAM
-    ).images[0]
+    image = image.resize((1024, 576))
+    control_image = image.resize((1024, 576))
 
     image = sdxlImg2ImgPipe(
+        width=1024,
+        height=576,
         prompt=prompt,
         image=image,
+        control_image=control_image,
         guidance_scale=8.0,
         num_inference_steps=100,
-        strength=0.2,
+        strength=0.25,
+        generator=generator,
     ).images[0]
 
     print(f"Saved Image: {image}")
