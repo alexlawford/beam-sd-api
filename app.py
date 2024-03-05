@@ -2,7 +2,7 @@ from beam import App, Runtime, Image, Output, Volume
 import os
 import torch
 import PIL
-from diffusers import StableDiffusionXLControlNetImg2ImgPipeline, StableDiffusionControlNetInpaintPipeline, ControlNetModel
+from diffusers import StableDiffusionControlNetInpaintPipeline, StableDiffusionLatentUpscalePipeline, AutoPipelineForImage2Image, ControlNetModel
 from diffusers.utils import load_image
 import base64
 from io import BytesIO
@@ -31,6 +31,8 @@ app = App(
     ),
     volumes=[Volume(name="models", path="./models")],
 )
+
+app.rest_api(keep_warm_seconds=0)
 
 def decode_base64_image(image_string):
     image_string = image_string[len("data:image/png;base64,"):]
@@ -62,31 +64,30 @@ def load_models():
         torch_dtype=torch.float16
     )
 
-    controlnetXl = ControlNetModel.from_pretrained(
-        "thibaud/controlnet-openpose-sdxl-1.0",
-        torch_dtype=torch.float16
-    )
-
-    inPaintPipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+    inpaint = StableDiffusionControlNetInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
         controlnet=controlnet,
         torch_dtype=torch.float16,
         cache_dir=cache_path,
     ).to("cuda")
 
-    sdxlImg2ImgPipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
-        "stabilityai/stable-diffusion-xl-refiner-1.0",
-        controlnet=controlnetXl,
+    upscale = StableDiffusionLatentUpscalePipeline.from_pretrained(
+        "stabilityai/sd-x2-latent-upscaler",
         torch_dtype=torch.float16,
-        variant="fp16",
-        use_safetensors=True,
-        cache_dir=cache_path,     
+        cache_dir=cache_path,
     ).to("cuda")
 
-    inPaintPipe.enable_xformers_memory_efficient_attention()
-    sdxlImg2ImgPipe.enable_xformers_memory_efficient_attention()
+    refine = AutoPipelineForImage2Image.from_pretrained(
+        "stabilityai/stable-diffusion-xl-refiner-1.0",
+        torch_dtype=torch.float16,
+        cache_dir=cache_path,
+    ).to("cuda")
 
-    return (inPaintPipe, sdxlImg2ImgPipe)
+    inpaint.enable_xformers_memory_efficient_attention()
+    upscale.enable_xformers_memory_efficient_attention()
+    refine.enable_xformers_memory_efficient_attention()
+
+    return (inpaint, upscale, refine)
 
 @app.task_queue(
     loader=load_models,
@@ -94,7 +95,8 @@ def load_models():
 )
 def generate_image(**inputs):
     
-    # prompt = inputs["prompt"]
+    prompt = inputs["prompt"]
+    seed = inputs["seed"]
 
     # mask_image = decode_base64_image(
     #     inputs["mask_image"]
@@ -104,38 +106,38 @@ def generate_image(**inputs):
     #     inputs["control_image"]
     # )
 
-    generator = torch.Generator(device="cuda").manual_seed(0)
-
-    prompt = "A man holding a camera in the artic"
+    generator = torch.Generator(device="cuda").manual_seed(seed)
     
     # Retrieve pre-loaded models from loader
-    (inPaintPipe, sdxlImg2ImgPipe) = inputs["context"]
+    (inpaint, upscale, refine) = inputs["context"]
 
-    image = inPaintPipe(
-        width=1024 / 2,
-        height=576 / 2,
+    latents = inpaint(
         prompt=prompt,
         image=img,
         mask_image=mask_image,
         control_image=control_image,
-        guidance_scale=8.0,
         num_inference_steps=50,
-        generator=generator
+        guidance_scale=7.5,
+        generator=generator,
+        controlnet_conditioning_scale=0.75,
+        output_type="latent",
+    ).images
+
+    upscaled = upscale(
+        prompt=prompt,
+        image=latents,
+        num_inference_steps=20,
+        guidance_scale=7.5,
+        generator=generator,
     ).images[0]
 
-    image = image.resize((1024, 576))
-    control_image = image.resize((1024, 576))
-
-    image = sdxlImg2ImgPipe(
-        width=1024,
-        height=576,
+    image = refine(
         prompt=prompt,
-        image=image,
-        control_image=control_image,
-        guidance_scale=8.0,
-        num_inference_steps=100,
-        strength=0.25,
+        image=upscaled,
+        num_inference_steps=50,
+        guidance_scale=7.5,
         generator=generator,
+        strength=0.25,
     ).images[0]
 
     print(f"Saved Image: {image}")
