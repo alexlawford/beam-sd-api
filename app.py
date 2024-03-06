@@ -2,7 +2,7 @@ from beam import App, Runtime, Image, Output, Volume
 import os
 import torch
 import PIL
-from diffusers import StableDiffusionControlNetInpaintPipeline, StableDiffusionLatentUpscalePipeline, AutoPipelineForImage2Image, ControlNetModel
+from diffusers import AutoPipelineForInpainting, StableDiffusionLatentUpscalePipeline, AutoPipelineForImage2Image, ControlNetModel
 from diffusers.utils import load_image
 import base64
 from io import BytesIO
@@ -51,6 +51,10 @@ mask_image = load_image(
     "./example_mask.png"
 )
 
+mask_image_2 = load_image(
+    "./example_mask_02.png"
+)
+
 control_image = load_image(
     "./example_control_image.png"
 )
@@ -64,11 +68,15 @@ def load_models():
         torch_dtype=torch.float16
     )
 
-    inpaint = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+    inpaint = AutoPipelineForInpainting.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
-        controlnet=controlnet,
         torch_dtype=torch.float16,
         cache_dir=cache_path,
+    ).to("cuda")
+
+    inpaintnet = AutoPipelineForInpainting.from_pipe(
+        inpaint,
+        controlnet=controlnet,
     ).to("cuda")
 
     upscale = StableDiffusionLatentUpscalePipeline.from_pretrained(
@@ -84,10 +92,11 @@ def load_models():
     ).to("cuda")
 
     inpaint.enable_xformers_memory_efficient_attention()
+    inpaintnet.enable_xformers_memory_efficient_attention()
     upscale.enable_xformers_memory_efficient_attention()
     refine.enable_xformers_memory_efficient_attention()
 
-    return (inpaint, upscale, refine)
+    return (inpaint, inpaintnet, upscale, refine)
 
 @app.task_queue(
     loader=load_models,
@@ -109,9 +118,9 @@ def generate_image(**inputs):
     generator = torch.Generator(device="cuda").manual_seed(seed)
     
     # Retrieve pre-loaded models from loader
-    (inpaint, upscale, refine) = inputs["context"]
+    (inpaint, inpaintnet, upscale, refine) = inputs["context"]
 
-    latents = inpaint(
+    latents = inpaintnet(
         prompt=prompt,
         image=img,
         mask_image=mask_image,
@@ -120,11 +129,21 @@ def generate_image(**inputs):
         guidance_scale=7.5,
         generator=generator,
         controlnet_conditioning_scale=0.75,
+    ).images[0]
+
+    latents = inpaint(
+        prompt='the moon, very large',
+        image=latents,
+        mask_image=mask_image_2,
+        num_inference_steps=50,
+        guidance_scale=7.5,
+        generator=generator,
+        controlnet_conditioning_scale=0.75,
         output_type="latent",
     ).images
 
     upscaled = upscale(
-        prompt=prompt,
+        prompt=prompt + ', the moon, very large',
         image=latents,
         num_inference_steps=20,
         guidance_scale=7.5,
@@ -132,7 +151,7 @@ def generate_image(**inputs):
     ).images[0]
 
     image = refine(
-        prompt=prompt,
+        prompt=prompt + ', the moon, very large',
         image=upscaled,
         num_inference_steps=50,
         guidance_scale=7.5,
