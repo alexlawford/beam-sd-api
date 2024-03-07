@@ -2,14 +2,15 @@ from beam import App, Runtime, Image, Output, Volume
 import os
 import torch
 import PIL
-from diffusers import AutoPipelineForInpainting, StableDiffusionLatentUpscalePipeline, AutoPipelineForImage2Image, ControlNetModel
+import numpy as np
+from diffusers import StableDiffusionControlNetInpaintPipeline, StableDiffusionLatentUpscalePipeline, AutoPipelineForImage2Image, ControlNetModel
 from diffusers.utils import load_image
 import base64
 from io import BytesIO
 
 cache_path = "./models"
 
-# The environment your app runs on
+# Environment app runs on
 app = App(
     name="stable-diffusion-app",
     runtime=Runtime(
@@ -23,16 +24,18 @@ app = App(
                 "transformers",
                 "torch",
                 "pillow",
+                "numpy",
                 "accelerate",
                 "safetensors",
-                "xformers"
+                "xformers",
+                "compel"
             ],
         ),
     ),
     volumes=[Volume(name="models", path="./models")],
 )
 
-app.rest_api(keep_warm_seconds=0)
+app.rest_api(keep_warm_seconds=600)
 
 def decode_base64_image(image_string):
     image_string = image_string[len("data:image/png;base64,"):]
@@ -42,41 +45,32 @@ def decode_base64_image(image_string):
     rgb = image.convert('RGB')
     return rgb
 
-# Temp: load images for testing
-img = load_image(
-    "./example_image.png"
-)
-
-mask_image = load_image(
-    "./example_mask.png"
-)
-
-mask_image_2 = load_image(
-    "./example_mask_02.png"
-)
-
-control_image = load_image(
-    "./example_control_image.png"
-)
-
-# This runs once when the container first boots
+# Runs once when the container first boots
 def load_models():
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    controlnet = ControlNetModel.from_pretrained(
+    scribble = ControlNetModel.from_pretrained(
+        "lllyasviel/sd-controlnet-scribble",
+        torch_dtype=torch.float16
+    )
+
+    openpose = ControlNetModel.from_pretrained(
         "lllyasviel/sd-controlnet-openpose",
         torch_dtype=torch.float16
     )
 
-    inpaint = AutoPipelineForInpainting.from_pretrained(
+    inpaintScribble = StableDiffusionControlNetInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
+        controlnet=scribble,
         torch_dtype=torch.float16,
         cache_dir=cache_path,
     ).to("cuda")
 
-    inpaintnet = AutoPipelineForInpainting.from_pipe(
-        inpaint,
-        controlnet=controlnet,
+    inpaintOpenpose = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+        "runwayml/stable-diffusion-inpainting",
+        controlnet=openpose,
+        torch_dtype=torch.float16,
+        cache_dir=cache_path,
     ).to("cuda")
 
     upscale = StableDiffusionLatentUpscalePipeline.from_pretrained(
@@ -91,73 +85,85 @@ def load_models():
         cache_dir=cache_path,
     ).to("cuda")
 
-    inpaint.enable_xformers_memory_efficient_attention()
-    inpaintnet.enable_xformers_memory_efficient_attention()
+    inpaintScribble.enable_xformers_memory_efficient_attention()
+    inpaintOpenpose.enable_xformers_memory_efficient_attention()
     upscale.enable_xformers_memory_efficient_attention()
     refine.enable_xformers_memory_efficient_attention()
 
-    return (inpaint, inpaintnet, upscale, refine)
+    return (inpaintScribble, inpaintOpenpose, upscale, refine)
 
 @app.task_queue(
     loader=load_models,
     outputs=[Output(path="output.png")],
 )
 def generate_image(**inputs):
-    
-    prompt = inputs["prompt"]
-    seed = inputs["seed"]
+        
+    img = load_image(
+        "./plain-background.png"
+    )
 
-    # mask_image = decode_base64_image(
-    #     inputs["mask_image"]
-    # )
-
-    # control_image = decode_base64_image(
-    #     inputs["control_image"]
-    # )
-
-    generator = torch.Generator(device="cuda").manual_seed(seed)
+    generator = torch.Generator(device="cuda").manual_seed(0)
     
     # Retrieve pre-loaded models from loader
-    (inpaint, inpaintnet, upscale, refine) = inputs["context"]
+    (inpaintScribble, inpaintOpenpose, upscale, refine) = inputs["context"]
 
-    latents = inpaintnet(
-        prompt=prompt,
-        image=img,
-        mask_image=mask_image,
-        control_image=control_image,
-        num_inference_steps=50,
-        guidance_scale=7.5,
-        generator=generator,
-        controlnet_conditioning_scale=0.75,
-    ).images[0]
+    layers = inputs["layers"]
 
-    latents = inpaint(
-        prompt='the moon, very large',
-        image=latents,
-        mask_image=mask_image_2,
-        num_inference_steps=50,
-        guidance_scale=7.5,
-        generator=generator,
-        controlnet_conditioning_scale=0.75,
-        output_type="latent",
-    ).images
+    full_prompt = ""
+
+    for layer in layers:
+
+        mask_image = decode_base64_image(
+            layer["mask"]
+        )
+
+        control_image = decode_base64_image(
+            layer["control"]
+        )
+
+        prompt = layer["prompt"]
+
+        full_prompt = full_prompt + ' ' + prompt
+
+        if layer["type"] == "figure":
+            img = inpaintOpenpose(
+                prompt=prompt,
+                image=img,
+                mask_image=mask_image,
+                control_image=control_image,
+                num_inference_steps=20,
+                guidance_scale=7.5,
+                generator=generator,
+                controlnet_conditioning_scale=0.75
+            ).images[0]
+        else:
+            img = inpaintScribble(
+                prompt=prompt,
+                image=img,
+                mask_image=mask_image,
+                control_image=control_image,
+                num_inference_steps=20,
+                guidance_scale=7.5,
+                generator=generator,
+                controlnet_conditioning_scale=0.75
+            ).images[0]
 
     upscaled = upscale(
-        prompt=prompt + ', the moon, very large',
-        image=latents,
+        prompt=full_prompt,
+        image=img,
         num_inference_steps=20,
-        guidance_scale=7.5,
+        guidance_scale=6.0,
         generator=generator,
     ).images[0]
 
-    image = refine(
-        prompt=prompt + ', the moon, very large',
+    refined = refine(
+        prompt=full_prompt,
         image=upscaled,
         num_inference_steps=50,
-        guidance_scale=7.5,
+        guidance_scale=6.0,
         generator=generator,
         strength=0.25,
     ).images[0]
 
-    print(f"Saved Image: {image}")
-    image.save("output.png")
+    print(f"Saved Image: {refined}")
+    refined.save("output.png")
